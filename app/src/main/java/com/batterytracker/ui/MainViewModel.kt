@@ -6,12 +6,12 @@ import com.batterytracker.data.repository.BatteryRepository
 
 class MainViewModel(private val repository: BatteryRepository) : ViewModel() {
 
-    /** All completed sessions observed as LiveData by MainActivity. */
-    val sessions: LiveData<List<BatterySession>> = repository.allCompletedSessions
+    /** All sessions (both ongoing and completed) observed as LiveData. */
+    val sessions: LiveData<List<BatterySession>> = repository.allSessions
 
     /** Get direct snapshot of sessions for export. */
     suspend fun getAllSessionsForExport(): List<BatterySession> =
-        repository.getAllCompletedList()
+        repository.getAllList()
 }
 
 /** Factory so we can pass the repository into the ViewModel constructor. */

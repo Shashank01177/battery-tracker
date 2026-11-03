@@ -1,6 +1,7 @@
 package com.batterytracker.ui
 
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -24,9 +25,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Main screen:
- *  • Displays past sessions (Charging, Discharging, Screen-on Active Usage)
- *  • Shows extra time kept on charge after 100%
- *  • Provides one-click Export of all battery records to CSV/Share
+ *  • Displays all charging, discharging, and screen-on sessions (live updating)
+ *  • Requests required runtime notification permission
+ *  • Provides one-click CSV export
  */
 class MainActivity : AppCompatActivity() {
 
@@ -50,13 +51,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Start the background monitor service
-        val serviceIntent = Intent(this, BatteryMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        // Request POST_NOTIFICATIONS permission on Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
         }
+
+        // Start the background monitor service
+        startMonitorService()
 
         // Wire up ViewModel
         val repository = BatteryRepository(AppDatabase.getInstance(this).batterySessionDao())
@@ -73,6 +77,24 @@ class MainActivity : AppCompatActivity() {
             adapter.submitList(sessions)
             binding.tvEmpty.visibility =
                 if (sessions.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        startMonitorService()
+    }
+
+    private fun startMonitorService() {
+        try {
+            val serviceIntent = Intent(this, BatteryMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -97,13 +119,15 @@ class MainActivity : AppCompatActivity() {
                 for (s in list) {
                     val startStr = dateFmt.format(Date(s.startTimeMs))
                     val endStr = s.endTimeMs?.let { dateFmt.format(Date(it)) } ?: "Ongoing"
-                    val durStr = s.durationMs?.let { formatDuration(it) } ?: "—"
+                    val durMs = s.durationMs ?: (System.currentTimeMillis() - s.startTimeMs)
+                    val durStr = formatDuration(durMs)
                     val overchargeStr = s.overchargeDurationMs?.let { formatDuration(it) } ?: "—"
-                    val change = s.percentChange ?: 0
+                    val endPct = s.endPercent ?: s.startPercent
+                    val change = kotlin.math.abs(endPct - s.startPercent)
                     val sign = if (s.sessionType == BatteryMonitorService.SESSION_CHARGING) "+" else "-"
 
                     append("${s.id},${s.sessionType},\"$startStr\",\"$endStr\",\"$durStr\",")
-                    append("${s.startPercent}%,${s.endPercent ?: s.startPercent}%,$sign$change%,\"$overchargeStr\"\n")
+                    append("${s.startPercent}%,${endPct}%,$sign$change%,\"$overchargeStr\"\n")
                 }
             }
 

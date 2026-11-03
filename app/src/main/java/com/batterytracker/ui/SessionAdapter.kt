@@ -16,7 +16,7 @@ import java.util.*
 import java.util.concurrent.TimeUnit
 
 /**
- * RecyclerView adapter that displays each battery session as a card.
+ * RecyclerView adapter that displays each battery session (both in-progress and completed).
  */
 class SessionAdapter :
     ListAdapter<BatterySession, SessionAdapter.SessionViewHolder>(DIFF_CALLBACK) {
@@ -47,46 +47,64 @@ class SessionAdapter :
 
         fun bind(session: BatterySession) {
             val ctx = b.root.context
+            val isOngoing = session.endTimeMs == null
 
             // ── Type label, colour, and indentation ──
             val (label, tintColor, indentDp) = when (session.sessionType) {
                 BatteryMonitorService.SESSION_CHARGING    ->
-                    Triple("⚡  Charging",      ContextCompat.getColor(ctx, R.color.charging_color),    0)
+                    Triple(
+                        if (isOngoing) "⚡  Charging (Active)" else "⚡  Charging",
+                        ContextCompat.getColor(ctx, R.color.charging_color),
+                        0
+                    )
                 BatteryMonitorService.SESSION_DISCHARGING ->
-                    Triple("🔋  Discharging",   ContextCompat.getColor(ctx, R.color.discharging_color), 0)
+                    Triple(
+                        if (isOngoing) "🔋  On Battery (Active)" else "🔋  Discharging",
+                        ContextCompat.getColor(ctx, R.color.discharging_color),
+                        0
+                    )
                 else ->  // USAGE
-                    Triple("📱  Active Usage",  ContextCompat.getColor(ctx, R.color.usage_color),       24)
+                    Triple(
+                        if (isOngoing) "📱  Screen On (Active)" else "📱  Screen On",
+                        ContextCompat.getColor(ctx, R.color.usage_color),
+                        24
+                    )
             }
 
             b.tvSessionType.text = label
             b.tvSessionType.setTextColor(tintColor)
             b.cardView.strokeColor = tintColor
 
-            // Indent USAGE cards to visually nest them under the discharge entry
+            // Indent screen usage cards
             val density = ctx.resources.displayMetrics.density
             val marginPx = (indentDp * density).toInt()
             (b.root.layoutParams as? ViewGroup.MarginLayoutParams)?.marginStart = marginPx
 
             // ── Time range ──
             val startDate = Date(session.startTimeMs)
-            val endDate   = session.endTimeMs?.let { Date(it) }
-
             val todayCal   = Calendar.getInstance()
             val sessionCal = Calendar.getInstance().apply { time = startDate }
             val sameDay    = todayCal.get(Calendar.DAY_OF_YEAR) == sessionCal.get(Calendar.DAY_OF_YEAR) &&
                              todayCal.get(Calendar.YEAR)        == sessionCal.get(Calendar.YEAR)
 
             val startStr = if (sameDay) TIME_FMT.format(startDate) else DATE_FMT.format(startDate)
-            val endStr   = endDate?.let { if (sameDay) TIME_FMT.format(it) else DATE_FMT.format(it) } ?: "—"
+            val endStr = if (isOngoing) {
+                "Now (Tracking)"
+            } else {
+                val endDate = Date(session.endTimeMs!!)
+                if (sameDay) TIME_FMT.format(endDate) else DATE_FMT.format(endDate)
+            }
             b.tvTimeRange.text = "$startStr  →  $endStr"
 
             // ── Duration ──
-            b.tvDuration.text = formatDuration(session.durationMs ?: 0L)
+            val now = System.currentTimeMillis()
+            val durationMs = if (isOngoing) (now - session.startTimeMs) else (session.durationMs ?: 0L)
+            b.tvDuration.text = formatDuration(durationMs)
 
             // ── % change ──
             val startPct = session.startPercent
             val endPct   = session.endPercent ?: startPct
-            val diff     = session.percentChange ?: 0
+            val diff     = kotlin.math.abs(endPct - startPct)
             val sign     = if (session.sessionType == BatteryMonitorService.SESSION_CHARGING) "+" else "−"
             b.tvPercentChange.text = "$startPct%  →  $endPct%   ($sign$diff%)"
 
@@ -101,7 +119,6 @@ class SessionAdapter :
             }
         }
 
-        /** Formats milliseconds into a human-readable string, e.g. "1h 23m" or "45 mins". */
         private fun formatDuration(ms: Long): String {
             val hours = TimeUnit.MILLISECONDS.toHours(ms)
             val mins  = TimeUnit.MILLISECONDS.toMinutes(ms) % 60
