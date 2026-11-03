@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/cardDay"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="8dp"
+    android:layout_marginTop="6dp"
+    android:layout_marginBottom="6dp"
+    android:clickable="true"
+    android:focusable="true"
+    app:cardBackgroundColor="#F1F5F9"
+    app:cardCornerRadius="14dp"
+    app:cardElevation="1.5dp"
+    app:strokeColor="#CBD5E1"
+    app:strokeWidth="1.2dp">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="12dp">
+
+        <!-- Day Icon -->
+        <TextView
+            android:id="@+id/tvDayIcon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📂"
+            android:textSize="18sp"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+        <!-- Day Title -->
+        <TextView
+            android:id="@+id/tvDayTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:textColor="#0F172A"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toEndOf="@id/tvDayIcon"
+            app:layout_constraintEnd_toStartOf="@id/tvChevron"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <!-- Day Stats: Charged X times • Used Xh Xm Xs -->
+        <TextView
+            android:id="@+id/tvDayStats"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_marginTop="3dp"
+            android:textColor="#475569"
+            android:textSize="12sp"
+            app:layout_constraintStart_toEndOf="@id/tvDayIcon"
+            app:layout_constraintEnd_toStartOf="@id/tvChevron"
+            app:layout_constraintTop_toBottomOf="@id/tvDayTitle"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+        <!-- Chevron / Expansion Indicator -->
+        <TextView
+            android:id="@+id/tvChevron"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="▼"
+            android:textColor="#64748B"
+            android:textSize="13sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintBottom_toBottomOf="parent" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</com.google.android.material.card.MaterialCardView>

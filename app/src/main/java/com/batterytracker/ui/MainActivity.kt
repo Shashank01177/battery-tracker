@@ -23,8 +23,8 @@ import java.util.*
 
 /**
  * Main screen:
- *  • Displays past and ongoing sessions (Charging, Discharging, Active Usage)
- *  • Shows live updates while charging and exact duration down to the second
+ *  • Displays past and ongoing sessions in Month -> Day -> Session folder structure
+ *  • Shows charges count and active usage duration for each month and day
  *  • Provides one-click Export of all battery records to CSV/Share
  */
 class MainActivity : AppCompatActivity() {
@@ -67,9 +67,9 @@ class MainActivity : AppCompatActivity() {
         binding.recyclerSessions.layoutManager = LinearLayoutManager(this)
         binding.recyclerSessions.adapter = adapter
 
-        // Observe and display sessions (including live ongoing ones)
+        // Observe and display sessions in Month -> Day folders
         viewModel.sessions.observe(this) { sessions ->
-            adapter.submitList(sessions)
+            adapter.setSessions(sessions)
             binding.tvEmpty.visibility =
                 if (sessions.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
         }
