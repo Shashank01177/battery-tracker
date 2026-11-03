@@ -8,6 +8,10 @@ class MainViewModel(private val repository: BatteryRepository) : ViewModel() {
 
     /** All completed sessions observed as LiveData by MainActivity. */
     val sessions: LiveData<List<BatterySession>> = repository.allCompletedSessions
+
+    /** Get direct snapshot of sessions for export. */
+    suspend fun getAllSessionsForExport(): List<BatterySession> =
+        repository.getAllCompletedList()
 }
 
 /** Factory so we can pass the repository into the ViewModel constructor. */

@@ -18,7 +18,7 @@ import kotlinx.coroutines.*
  * records each charging / discharging / active-usage session to Room.
  *
  * Session types:
- *  • CHARGING    – charger connected until unplugged
+ *  • CHARGING    – charger connected until unplugged (tracks extra time kept at 100%)
  *  • DISCHARGING – charger unplugged until plugged back in
  *  • USAGE       – screen-on period that falls inside a DISCHARGING session
  */
@@ -65,6 +65,11 @@ class BatteryMonitorService : Service() {
                 nowCharging && !isCharging -> onChargingStarted(percent)
                 !nowCharging && isCharging -> onChargingStopped(percent)
             }
+
+            if (nowCharging && isCharging && percent >= 100) {
+                checkReached100()
+            }
+
             isCharging = nowCharging
             updateNotification(percent, nowCharging)
         }
@@ -128,12 +133,16 @@ class BatteryMonitorService : Service() {
         openDischargingId?.let { closeSession(it, SESSION_DISCHARGING, percent) }
         openDischargingId = null
 
+        val now = System.currentTimeMillis()
+        val reached100 = if (percent >= 100) now else null
+
         scope.launch {
             openChargingId = repository.startSession(
                 BatterySession(
                     sessionType = SESSION_CHARGING,
                     startPercent = percent,
-                    startTimeMs = System.currentTimeMillis()
+                    startTimeMs = now,
+                    reached100TimeMs = reached100
                 )
             )
         }
@@ -155,16 +164,26 @@ class BatteryMonitorService : Service() {
         }
     }
 
+    /** Mark when the phone hits 100% while on charge. */
+    private fun checkReached100() {
+        scope.launch {
+            val open = repository.getOpenSession(SESSION_CHARGING) ?: return@launch
+            if (open.reached100TimeMs == null) {
+                open.reached100TimeMs = System.currentTimeMillis()
+                repository.closeSession(open)
+            }
+        }
+    }
+
     // ──────────────────────────────────────────────────
     // Usage segment management (screen on/off during discharge)
     // ──────────────────────────────────────────────────
 
     /**
      * Screen turned ON while discharging → start a new USAGE segment.
-     * If we are charging, screen events are ignored (no usage segments during charge).
      */
     private fun onScreenOn() {
-        if (isCharging || openDischargingId == null) return  // only track during discharge
+        if (isCharging || openDischargingId == null) return
 
         scope.launch {
             openUsageId = repository.startSession(
@@ -201,6 +220,16 @@ class BatteryMonitorService : Service() {
             open.endTimeMs = now
             open.durationMs = now - open.startTimeMs
             open.percentChange = kotlin.math.abs(endPercent - open.startPercent)
+
+            if (type == SESSION_CHARGING) {
+                if (endPercent >= 100 && open.reached100TimeMs == null) {
+                    open.reached100TimeMs = now
+                }
+                open.reached100TimeMs?.let { hit100 ->
+                    open.overchargeDurationMs = kotlin.math.max(0L, now - hit100)
+                }
+            }
+
             repository.closeSession(open)
         }
     }

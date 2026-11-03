@@ -5,7 +5,8 @@
     Layout:
       [⚡ Charging]             [10:30 AM → 11:10 AM]
       ─────────────────────────────────────────────
-      20% → 40%  (+20%)              40 mins
+      20% → 100% (+80%)              40 mins
+      ⚡ Kept plugged at 100%: 25 mins
 -->
 <com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
@@ -80,6 +81,20 @@
             android:textStyle="bold"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toBottomOf="@id/divider" />
+
+        <!-- Extra time kept on charge after 100% -->
+        <TextView
+            android:id="@+id/tvOvercharge"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="#D97706"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:visibility="gone"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/tvPercentChange" />
 
     </androidx.constraintlayout.widget.ConstraintLayout>
 </com.google.android.material.card.MaterialCardView>

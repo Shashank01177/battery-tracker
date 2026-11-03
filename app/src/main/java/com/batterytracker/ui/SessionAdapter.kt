@@ -1,6 +1,7 @@
 package com.batterytracker.ui
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
@@ -16,20 +17,6 @@ import java.util.concurrent.TimeUnit
 
 /**
  * RecyclerView adapter that displays each battery session as a card.
- *
- * Session types and what their card shows:
- *
- *  ⚡ CHARGING
- *    10:30 AM → 11:10 AM
- *    20% → 40%  (+20%)    |   40 mins
- *
- *  🔋 DISCHARGING
- *    11:10 AM → 01:30 PM
- *    80% → 55%  (−25%)    |   2h 20m
- *
- *  📱 ACTIVE USAGE  (indented, tinted purple — sub-logs within discharge)
- *    11:10 AM → 11:20 AM
- *    80% → 78%  (−2%)     |   10 mins
  */
 class SessionAdapter :
     ListAdapter<BatterySession, SessionAdapter.SessionViewHolder>(DIFF_CALLBACK) {
@@ -102,6 +89,16 @@ class SessionAdapter :
             val diff     = session.percentChange ?: 0
             val sign     = if (session.sessionType == BatteryMonitorService.SESSION_CHARGING) "+" else "−"
             b.tvPercentChange.text = "$startPct%  →  $endPct%   ($sign$diff%)"
+
+            // ── Kept plugged at 100% ──
+            val overchargeMs = session.overchargeDurationMs
+            if (session.sessionType == BatteryMonitorService.SESSION_CHARGING &&
+                overchargeMs != null && overchargeMs > 0L) {
+                b.tvOvercharge.visibility = View.VISIBLE
+                b.tvOvercharge.text = "⚡ Kept plugged at 100%: ${formatDuration(overchargeMs)}"
+            } else {
+                b.tvOvercharge.visibility = View.GONE
+            }
         }
 
         /** Formats milliseconds into a human-readable string, e.g. "1h 23m" or "45 mins". */

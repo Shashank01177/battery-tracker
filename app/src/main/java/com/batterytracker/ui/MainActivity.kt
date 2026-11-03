@@ -3,20 +3,30 @@ package com.batterytracker.ui
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.batterytracker.R
 import com.batterytracker.data.db.AppDatabase
 import com.batterytracker.data.repository.BatteryRepository
 import com.batterytracker.databinding.ActivityMainBinding
 import com.batterytracker.service.BatteryMonitorService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.TimeUnit
 
 /**
- * Main (and only) screen.
- *
- * Shows:
- *  • A header with current battery status pulled live from the system
- *  • A RecyclerView of all past charging / discharging sessions
+ * Main screen:
+ *  • Displays past sessions (Charging, Discharging, Screen-on Active Usage)
+ *  • Shows extra time kept on charge after 100%
+ *  • Provides one-click Export of all battery records to CSV/Share
  */
 class MainActivity : AppCompatActivity() {
 
@@ -28,6 +38,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Setup Toolbar Menu (Export)
+        binding.toolbar.inflateMenu(R.menu.menu_main)
+        binding.toolbar.setOnMenuItemClickListener { menuItem ->
+            if (menuItem.itemId == R.id.action_export) {
+                exportRecords()
+                true
+            } else {
+                false
+            }
+        }
 
         // Start the background monitor service
         val serviceIntent = Intent(this, BatteryMonitorService::class.java)
@@ -52,6 +73,73 @@ class MainActivity : AppCompatActivity() {
             adapter.submitList(sessions)
             binding.tvEmpty.visibility =
                 if (sessions.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        }
+    }
+
+    /** Exports all battery session records as a CSV file shared via Android Intent. */
+    private fun exportRecords() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val list = viewModel.getAllSessionsForExport()
+            if (list.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "No battery records to export yet.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                return@launch
+            }
+
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            val csvContent = buildString {
+                append("ID,Session Type,Start Time,End Time,Duration,Start %,End %,Change %,Kept at 100% Time\n")
+                for (s in list) {
+                    val startStr = dateFmt.format(Date(s.startTimeMs))
+                    val endStr = s.endTimeMs?.let { dateFmt.format(Date(it)) } ?: "Ongoing"
+                    val durStr = s.durationMs?.let { formatDuration(it) } ?: "—"
+                    val overchargeStr = s.overchargeDurationMs?.let { formatDuration(it) } ?: "—"
+                    val change = s.percentChange ?: 0
+                    val sign = if (s.sessionType == BatteryMonitorService.SESSION_CHARGING) "+" else "-"
+
+                    append("${s.id},${s.sessionType},\"$startStr\",\"$endStr\",\"$durStr\",")
+                    append("${s.startPercent}%,${s.endPercent ?: s.startPercent}%,$sign$change%,\"$overchargeStr\"\n")
+                }
+            }
+
+            val exportFile = File(cacheDir, "battery_records_${System.currentTimeMillis()}.csv")
+            exportFile.writeText(csvContent)
+
+            val uri = FileProvider.getUriForFile(
+                this@MainActivity,
+                "${applicationContext.packageName}.fileprovider",
+                exportFile
+            )
+
+            withContext(Dispatchers.Main) {
+                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "Battery Tracker Records Export")
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "Exported battery records log from Battery Tracker."
+                    )
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(shareIntent, "Export Battery Records"))
+            }
+        }
+    }
+
+    private fun formatDuration(ms: Long): String {
+        val hours = TimeUnit.MILLISECONDS.toHours(ms)
+        val mins = TimeUnit.MILLISECONDS.toMinutes(ms) % 60
+        val secs = TimeUnit.MILLISECONDS.toSeconds(ms) % 60
+        return when {
+            hours > 0 -> "${hours}h ${mins}m"
+            mins > 0 -> "${mins} min${if (mins > 1) "s" else ""}"
+            else -> "${secs} sec"
         }
     }
 }

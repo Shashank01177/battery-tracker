@@ -13,6 +13,9 @@ class BatteryRepository(private val dao: BatterySessionDao) {
     /** Live list of all completed sessions (newest first). */
     val allCompletedSessions: LiveData<List<BatterySession>> = dao.getAllCompleted()
 
+    /** Synchronous snapshot of all completed sessions for file export. */
+    suspend fun getAllCompletedList(): List<BatterySession> = dao.getAllCompletedList()
+
     /** Start a new session and return its ID so the service can close it later. */
     suspend fun startSession(session: BatterySession): Long = dao.insert(session)
 
