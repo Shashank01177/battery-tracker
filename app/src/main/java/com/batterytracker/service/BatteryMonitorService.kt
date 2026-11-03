@@ -5,7 +5,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.ServiceInfo
 import android.os.*
 import androidx.core.app.NotificationCompat
 import com.batterytracker.data.db.AppDatabase
@@ -15,12 +14,14 @@ import com.batterytracker.ui.MainActivity
 import kotlinx.coroutines.*
 
 /**
- * Foreground service that actively monitors battery and screen events.
+ * Foreground service that listens to Android battery and screen events and
+ * records each charging / discharging / active-usage session to Room.
  *
  * Session types:
- *  • CHARGING    – charger connected until unplugged (tracks extra time kept at 100%)
- *  • DISCHARGING – charger unplugged until plugged back in
- *  • USAGE       – screen-on period that falls inside a discharge period
+ *  • CHARGING       – charger connected (updates live in DB while charging)
+ *  • DISCHARGING    – on battery power (updates live while discharging)
+ *  • USAGE          – screen-on active usage while discharging
+ *  • USAGE_CHARGING – screen-on active usage while charging
  */
 class BatteryMonitorService : Service() {
 
@@ -30,6 +31,7 @@ class BatteryMonitorService : Service() {
         const val SESSION_CHARGING = "CHARGING"
         const val SESSION_DISCHARGING = "DISCHARGING"
         const val SESSION_USAGE = "USAGE"
+        const val SESSION_USAGE_CHARGING = "USAGE_CHARGING"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -40,24 +42,19 @@ class BatteryMonitorService : Service() {
     private var openDischargingId: Long? = null
     private var openUsageId: Long? = null
 
-    // Charger connection state
+    // Whether the charger is currently connected
     private var isCharging = false
 
-    // Flag for initial broadcast setup
-    private var isFirstBatteryCheck = true
-
-    // Latest known battery %
+    // Latest known battery % (updated on every ACTION_BATTERY_CHANGED)
     private var currentPercent: Int = 0
 
     // ──────────────────────────────────────────────────
-    // Receiver 1: battery level & plug status changes
+    // Receiver 1: battery status changes (charge level, plug state)
     // ──────────────────────────────────────────────────
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
             val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, 100)
-            if (level < 0 || scale <= 0) return
-
             val percent = (level * 100 / scale)
             val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
 
@@ -66,31 +63,23 @@ class BatteryMonitorService : Service() {
 
             currentPercent = percent
 
-            if (isFirstBatteryCheck) {
-                isFirstBatteryCheck = false
-                isCharging = nowCharging
-                ensureInitialSession(nowCharging, percent)
-            } else {
-                when {
-                    nowCharging && !isCharging -> onChargingStarted(percent)
-                    !nowCharging && isCharging -> onChargingStopped(percent)
-                }
-                isCharging = nowCharging
+            when {
+                nowCharging && !isCharging -> onChargingStarted(percent)
+                !nowCharging && isCharging -> onChargingStopped(percent)
+                else -> updateOpenSessionsProgress(percent)
             }
 
-            // Keep the active session in Room updated with latest percent and duration
-            updateOngoingSessions(percent)
-
-            if (nowCharging && isCharging && percent >= 100) {
+            if (nowCharging && percent >= 100) {
                 checkReached100()
             }
 
+            isCharging = nowCharging
             updateNotification(percent, nowCharging)
         }
     }
 
     // ──────────────────────────────────────────────────
-    // Receiver 2: screen on/off for active phone usage
+    // Receiver 2: screen on/off (tracks active usage in both charging & discharging)
     // ──────────────────────────────────────────────────
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -108,70 +97,39 @@ class BatteryMonitorService : Service() {
         super.onCreate()
         repository = BatteryRepository(AppDatabase.getInstance(this).batterySessionDao())
         createNotificationChannel()
+        startForeground(NOTIFICATION_ID, buildNotification("Monitoring battery…"))
 
-        // Start foreground service safely across Android 8 through 14+
-        val notification = buildNotification("Monitoring battery…")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        // Battery state changes
+        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
-        // Screen state receiver
+        // Screen on/off for usage segment tracking
         val screenFilter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         registerReceiver(screenReceiver, screenFilter)
 
-        // Battery state receiver
-        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-
-        // Re-link open sessions from previous runs
+        // Re-link any sessions that were open before the service was killed
         scope.launch { recoverOpenSessions() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_STICKY
+        START_STICKY  // Android restarts us if killed
 
     override fun onDestroy() {
         super.onDestroy()
-        try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
-        try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
+        unregisterReceiver(batteryReceiver)
+        unregisterReceiver(screenReceiver)
         scope.cancel()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     // ──────────────────────────────────────────────────
-    // Session Initialization & Management
+    // Charging session management
     // ──────────────────────────────────────────────────
 
-    /** Ensures that an active session is running as soon as the app starts. */
-    private fun ensureInitialSession(charging: Boolean, percent: Int) {
-        scope.launch {
-            val targetType = if (charging) SESSION_CHARGING else SESSION_DISCHARGING
-            val existing = repository.getOpenSession(targetType)
-
-            if (existing != null) {
-                if (charging) openChargingId = existing.id else openDischargingId = existing.id
-            } else {
-                val now = System.currentTimeMillis()
-                val session = BatterySession(
-                    sessionType = targetType,
-                    startPercent = percent,
-                    endPercent = percent,
-                    startTimeMs = now,
-                    percentChange = 0,
-                    reached100TimeMs = if (charging && percent >= 100) now else null
-                )
-                val id = repository.startSession(session)
-                if (charging) openChargingId = id else openDischargingId = id
-            }
-        }
-    }
-
-    /** Charger plugged in: close discharging and active usage, open charging session. */
+    /** Charger plugged in: close discharging sessions and open a new charging session. */
     private fun onChargingStarted(percent: Int) {
         openUsageId?.let { closeSession(it, SESSION_USAGE, percent) }
         openUsageId = null
@@ -188,6 +146,7 @@ class BatteryMonitorService : Service() {
                     startPercent = percent,
                     endPercent = percent,
                     startTimeMs = now,
+                    durationMs = 0L,
                     percentChange = 0,
                     reached100TimeMs = reached100
                 )
@@ -195,8 +154,10 @@ class BatteryMonitorService : Service() {
         }
     }
 
-    /** Charger unplugged: close charging session and open discharging session. */
+    /** Charger unplugged: close charging session and open a discharging session. */
     private fun onChargingStopped(percent: Int) {
+        openUsageId?.let { closeSession(it, SESSION_USAGE_CHARGING, percent) }
+        openUsageId = null
         openChargingId?.let { closeSession(it, SESSION_CHARGING, percent) }
         openChargingId = null
 
@@ -208,63 +169,57 @@ class BatteryMonitorService : Service() {
                     startPercent = percent,
                     endPercent = percent,
                     startTimeMs = now,
+                    durationMs = 0L,
                     percentChange = 0
                 )
             )
         }
     }
 
-    /** Screen turned ON: start active usage log if on battery. */
-    private fun onScreenOn() {
-        if (isCharging || openUsageId != null) return
-
+    /** Update ongoing sessions live in the database as battery level changes. */
+    private fun updateOpenSessionsProgress(percent: Int) {
         val now = System.currentTimeMillis()
         scope.launch {
-            openUsageId = repository.startSession(
-                BatterySession(
-                    sessionType = SESSION_USAGE,
-                    startPercent = currentPercent,
-                    endPercent = currentPercent,
-                    startTimeMs = now,
-                    percentChange = 0
-                )
-            )
-        }
-    }
-
-    /** Screen turned OFF: complete active usage log. */
-    private fun onScreenOff() {
-        val id = openUsageId ?: return
-        closeSession(id, SESSION_USAGE, currentPercent)
-        openUsageId = null
-    }
-
-    /** Keep ongoing sessions up to date in DB so user sees real-time battery changes in UI. */
-    private fun updateOngoingSessions(percent: Int) {
-        val now = System.currentTimeMillis()
-        scope.launch {
-            val activeType = if (isCharging) SESSION_CHARGING else SESSION_DISCHARGING
-            repository.getOpenSession(activeType)?.let { session ->
-                session.endPercent = percent
-                session.percentChange = kotlin.math.abs(percent - session.startPercent)
-                session.durationMs = now - session.startTimeMs
-                repository.updateSession(session)
+            // Update open charging session
+            openChargingId?.let { id ->
+                val session = repository.getOpenSession(SESSION_CHARGING)
+                if (session != null && session.id == id) {
+                    session.endPercent = percent
+                    session.durationMs = now - session.startTimeMs
+                    session.percentChange = kotlin.math.abs(percent - session.startPercent)
+                    if (percent >= 100 && session.reached100TimeMs != null) {
+                        session.overchargeDurationMs = kotlin.math.max(0L, now - session.reached100TimeMs!!)
+                    }
+                    repository.updateSession(session)
+                }
             }
 
-            openUsageId?.let { usageId ->
-                repository.getOpenSession(SESSION_USAGE)?.let { usageSession ->
-                    if (usageSession.id == usageId) {
-                        usageSession.endPercent = percent
-                        usageSession.percentChange = kotlin.math.abs(percent - usageSession.startPercent)
-                        usageSession.durationMs = now - usageSession.startTimeMs
-                        repository.updateSession(usageSession)
-                    }
+            // Update open discharging session
+            openDischargingId?.let { id ->
+                val session = repository.getOpenSession(SESSION_DISCHARGING)
+                if (session != null && session.id == id) {
+                    session.endPercent = percent
+                    session.durationMs = now - session.startTimeMs
+                    session.percentChange = kotlin.math.abs(percent - session.startPercent)
+                    repository.updateSession(session)
+                }
+            }
+
+            // Update open usage session
+            openUsageId?.let { id ->
+                val type = if (isCharging) SESSION_USAGE_CHARGING else SESSION_USAGE
+                val session = repository.getOpenSession(type)
+                if (session != null && session.id == id) {
+                    session.endPercent = percent
+                    session.durationMs = now - session.startTimeMs
+                    session.percentChange = kotlin.math.abs(percent - session.startPercent)
+                    repository.updateSession(session)
                 }
             }
         }
     }
 
-    /** Check and record 100% full charge timestamp. */
+    /** Mark when the phone hits 100% while on charge. */
     private fun checkReached100() {
         scope.launch {
             val open = repository.getOpenSession(SESSION_CHARGING) ?: return@launch
@@ -275,7 +230,46 @@ class BatteryMonitorService : Service() {
         }
     }
 
-    /** Completes a session: writes final endTime, duration, percentChange, and overcharge. */
+    // ──────────────────────────────────────────────────
+    // Usage segment management (screen on/off)
+    // ──────────────────────────────────────────────────
+
+    /**
+     * Screen turned ON: start tracking active usage session (works in both charging and discharging).
+     */
+    private fun onScreenOn() {
+        val usageType = if (isCharging) SESSION_USAGE_CHARGING else SESSION_USAGE
+        val now = System.currentTimeMillis()
+
+        scope.launch {
+            openUsageId = repository.startSession(
+                BatterySession(
+                    sessionType = usageType,
+                    startPercent = currentPercent,
+                    endPercent = currentPercent,
+                    startTimeMs = now,
+                    durationMs = 0L,
+                    percentChange = 0
+                )
+            )
+        }
+    }
+
+    /**
+     * Screen turned OFF: close the active usage session.
+     */
+    private fun onScreenOff() {
+        val id = openUsageId ?: return
+        val usageType = if (isCharging) SESSION_USAGE_CHARGING else SESSION_USAGE
+        closeSession(id, usageType, currentPercent)
+        openUsageId = null
+    }
+
+    // ──────────────────────────────────────────────────
+    // Generic session closer
+    // ──────────────────────────────────────────────────
+
+    /** Fetches the open session by type, fills end values, and persists. */
     private fun closeSession(sessionId: Long, type: String, endPercent: Int) {
         scope.launch {
             val open = repository.getOpenSession(type) ?: return@launch
@@ -296,20 +290,21 @@ class BatteryMonitorService : Service() {
                 }
             }
 
-            repository.updateSession(open)
+            repository.closeSession(open)
         }
     }
 
-    /** Re-link open sessions on service restart. */
+    /** Re-link open sessions surviving a service restart. */
     private suspend fun recoverOpenSessions() {
         repository.getOpenSession(SESSION_CHARGING)?.let { openChargingId = it.id }
         repository.getOpenSession(SESSION_DISCHARGING)?.let { openDischargingId = it.id }
         repository.getOpenSession(SESSION_USAGE)?.let { openUsageId = it.id }
+        repository.getOpenSession(SESSION_USAGE_CHARGING)?.let { openUsageId = it.id }
         repository.pruneOld()
     }
 
     // ──────────────────────────────────────────────────
-    // Notification
+    // Notification helpers
     // ──────────────────────────────────────────────────
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -317,8 +312,8 @@ class BatteryMonitorService : Service() {
                 CHANNEL_ID,
                 "Battery Monitor",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Tracks charging, discharging & screen usage" }
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+            ).apply { description = "Tracks charging & discharging sessions" }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
@@ -331,7 +326,7 @@ class BatteryMonitorService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Battery Tracker")
             .setContentText(text)
-            .setSmallIcon(com.batterytracker.R.drawable.ic_battery_launcher)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_charging)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
@@ -339,7 +334,8 @@ class BatteryMonitorService : Service() {
 
     private fun updateNotification(percent: Int, charging: Boolean) {
         val status = if (charging) "⚡ Charging" else "🔋 On battery"
-        val notification = buildNotification("$status • $percent%")
-        getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+        val notification = buildNotification("$status  •  $percent%")
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification)
     }
 }

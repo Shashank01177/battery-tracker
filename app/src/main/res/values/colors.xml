@@ -16,6 +16,9 @@
     <!-- Active Usage (screen-on segment during discharge): soft purple -->
     <color name="usage_color">#8B5CF6</color>
 
+    <!-- Active Usage (screen-on segment while charging): vibrant emerald green -->
+    <color name="usage_charging_color">#10B981</color>
+
     <!-- Required by Android theme system -->
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>

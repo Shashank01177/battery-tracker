@@ -13,17 +13,16 @@ import com.batterytracker.databinding.ItemSessionBinding
 import com.batterytracker.service.BatteryMonitorService
 import java.text.SimpleDateFormat
 import java.util.*
-import java.util.concurrent.TimeUnit
 
 /**
- * RecyclerView adapter that displays each battery session (both in-progress and completed).
+ * RecyclerView adapter that displays each battery session as a card with exact seconds.
  */
 class SessionAdapter :
     ListAdapter<BatterySession, SessionAdapter.SessionViewHolder>(DIFF_CALLBACK) {
 
     companion object {
-        private val TIME_FMT = SimpleDateFormat("hh:mm a", Locale.getDefault())
-        private val DATE_FMT = SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault())
+        private val TIME_FMT = SimpleDateFormat("hh:mm:ss a", Locale.getDefault())
+        private val DATE_FMT = SimpleDateFormat("dd MMM, hh:mm:ss a", Locale.getDefault())
 
         private val DIFF_CALLBACK = object : DiffUtil.ItemCallback<BatterySession>() {
             override fun areItemsTheSame(a: BatterySession, b: BatterySession) = a.id == b.id
@@ -50,62 +49,57 @@ class SessionAdapter :
             val isOngoing = session.endTimeMs == null
 
             // ── Type label, colour, and indentation ──
-            val (label, tintColor, indentDp) = when (session.sessionType) {
-                BatteryMonitorService.SESSION_CHARGING    ->
-                    Triple(
-                        if (isOngoing) "⚡  Charging (Active)" else "⚡  Charging",
-                        ContextCompat.getColor(ctx, R.color.charging_color),
-                        0
-                    )
+            val (baseLabel, tintColor, indentDp) = when (session.sessionType) {
+                BatteryMonitorService.SESSION_CHARGING ->
+                    Triple("⚡ Charging", ContextCompat.getColor(ctx, R.color.charging_color), 0)
                 BatteryMonitorService.SESSION_DISCHARGING ->
-                    Triple(
-                        if (isOngoing) "🔋  On Battery (Active)" else "🔋  Discharging",
-                        ContextCompat.getColor(ctx, R.color.discharging_color),
-                        0
-                    )
-                else ->  // USAGE
-                    Triple(
-                        if (isOngoing) "📱  Screen On (Active)" else "📱  Screen On",
-                        ContextCompat.getColor(ctx, R.color.usage_color),
-                        24
-                    )
+                    Triple("🔋 Discharging", ContextCompat.getColor(ctx, R.color.discharging_color), 0)
+                BatteryMonitorService.SESSION_USAGE_CHARGING ->
+                    Triple("📱⚡ Active Usage (Charging)", ContextCompat.getColor(ctx, R.color.usage_charging_color), 24)
+                else ->  // SESSION_USAGE
+                    Triple("📱 Active Usage", ContextCompat.getColor(ctx, R.color.usage_color), 24)
             }
 
-            b.tvSessionType.text = label
+            b.tvSessionType.text = if (isOngoing) "$baseLabel (Live)" else baseLabel
             b.tvSessionType.setTextColor(tintColor)
             b.cardView.strokeColor = tintColor
 
-            // Indent screen usage cards
+            // Indent sub-logs to visually nest under parent session
             val density = ctx.resources.displayMetrics.density
             val marginPx = (indentDp * density).toInt()
             (b.root.layoutParams as? ViewGroup.MarginLayoutParams)?.marginStart = marginPx
 
-            // ── Time range ──
+            // ── Time range (with seconds) ──
             val startDate = Date(session.startTimeMs)
-            val todayCal   = Calendar.getInstance()
+            val todayCal = Calendar.getInstance()
             val sessionCal = Calendar.getInstance().apply { time = startDate }
-            val sameDay    = todayCal.get(Calendar.DAY_OF_YEAR) == sessionCal.get(Calendar.DAY_OF_YEAR) &&
-                             todayCal.get(Calendar.YEAR)        == sessionCal.get(Calendar.YEAR)
+            val sameDay = todayCal.get(Calendar.DAY_OF_YEAR) == sessionCal.get(Calendar.DAY_OF_YEAR) &&
+                    todayCal.get(Calendar.YEAR) == sessionCal.get(Calendar.YEAR)
 
             val startStr = if (sameDay) TIME_FMT.format(startDate) else DATE_FMT.format(startDate)
             val endStr = if (isOngoing) {
-                "Now (Tracking)"
+                "Now (Live)"
             } else {
                 val endDate = Date(session.endTimeMs!!)
                 if (sameDay) TIME_FMT.format(endDate) else DATE_FMT.format(endDate)
             }
             b.tvTimeRange.text = "$startStr  →  $endStr"
 
-            // ── Duration ──
-            val now = System.currentTimeMillis()
-            val durationMs = if (isOngoing) (now - session.startTimeMs) else (session.durationMs ?: 0L)
-            b.tvDuration.text = formatDuration(durationMs)
+            // ── Duration (with seconds) ──
+            val currentDurationMs = if (isOngoing) {
+                System.currentTimeMillis() - session.startTimeMs
+            } else {
+                session.durationMs ?: 0L
+            }
+            b.tvDuration.text = formatDuration(currentDurationMs)
 
             // ── % change ──
             val startPct = session.startPercent
-            val endPct   = session.endPercent ?: startPct
-            val diff     = kotlin.math.abs(endPct - startPct)
-            val sign     = if (session.sessionType == BatteryMonitorService.SESSION_CHARGING) "+" else "−"
+            val endPct = session.endPercent ?: startPct
+            val diff = session.percentChange ?: kotlin.math.abs(endPct - startPct)
+            val isGaining = session.sessionType == BatteryMonitorService.SESSION_CHARGING ||
+                    session.sessionType == BatteryMonitorService.SESSION_USAGE_CHARGING
+            val sign = if (isGaining) "+" else "−"
             b.tvPercentChange.text = "$startPct%  →  $endPct%   ($sign$diff%)"
 
             // ── Kept plugged at 100% ──
@@ -119,14 +113,16 @@ class SessionAdapter :
             }
         }
 
+        /** Formats milliseconds into a string with exact seconds, e.g. "1h 23m 45s", "10m 15s", or "42s". */
         private fun formatDuration(ms: Long): String {
-            val hours = TimeUnit.MILLISECONDS.toHours(ms)
-            val mins  = TimeUnit.MILLISECONDS.toMinutes(ms) % 60
-            val secs  = TimeUnit.MILLISECONDS.toSeconds(ms) % 60
+            val totalSecs = ms / 1000
+            val hours = totalSecs / 3600
+            val mins = (totalSecs % 3600) / 60
+            val secs = totalSecs % 60
             return when {
-                hours > 0 -> "${hours}h ${mins}m"
-                mins  > 0 -> "${mins} min${if (mins > 1) "s" else ""}"
-                else      -> "${secs} sec${if (secs > 1) "s" else ""}"
+                hours > 0 -> "${hours}h ${mins}m ${secs}s"
+                mins > 0 -> "${mins}m ${secs}s"
+                else -> "${secs}s"
             }
         }
     }
