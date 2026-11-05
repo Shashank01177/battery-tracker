@@ -1,15 +1,18 @@
 package com.batterytracker.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.batterytracker.R
+import com.batterytracker.data.DataImporter
 import com.batterytracker.data.db.AppDatabase
 import com.batterytracker.data.repository.BatteryRepository
 import com.batterytracker.databinding.ActivityMainBinding
@@ -24,28 +27,44 @@ import java.util.*
 /**
  * Main screen:
  *  • Displays past and ongoing sessions in Month -> Day -> Session folder structure
- *  • Shows charges count and active usage duration for each month and day
- *  • Provides one-click Export of all battery records to CSV/Share
+ *  • Auto-seeds initial history from assets/initial_records.csv
+ *  • Allows manual Import and Export of CSV records
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var viewModel: MainViewModel
     private lateinit var adapter: SessionAdapter
+    private lateinit var repository: BatteryRepository
+
+    // File picker for importing battery records CSV
+    private val importFilePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { importFromUri(it) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Setup Toolbar Menu (Export)
+        // Wire up repository and ViewModel
+        repository = BatteryRepository(AppDatabase.getInstance(this).batterySessionDao())
+        viewModel = ViewModelProvider(this, MainViewModelFactory(repository))
+            .get(MainViewModel::class.java)
+
+        // Setup Toolbar Menu (Import & Export)
         binding.toolbar.inflateMenu(R.menu.menu_main)
         binding.toolbar.setOnMenuItemClickListener { menuItem ->
-            if (menuItem.itemId == R.id.action_export) {
-                exportRecords()
-                true
-            } else {
-                false
+            when (menuItem.itemId) {
+                R.id.action_export -> {
+                    exportRecords()
+                    true
+                }
+                R.id.action_import -> {
+                    importFilePicker.launch("*/*")
+                    true
+                }
+                else -> false
             }
         }
 
@@ -57,11 +76,6 @@ class MainActivity : AppCompatActivity() {
             startService(serviceIntent)
         }
 
-        // Wire up ViewModel
-        val repository = BatteryRepository(AppDatabase.getInstance(this).batterySessionDao())
-        viewModel = ViewModelProvider(this, MainViewModelFactory(repository))
-            .get(MainViewModel::class.java)
-
         // Set up RecyclerView
         adapter = SessionAdapter()
         binding.recyclerSessions.layoutManager = LinearLayoutManager(this)
@@ -72,6 +86,37 @@ class MainActivity : AppCompatActivity() {
             adapter.setSessions(sessions)
             binding.tvEmpty.visibility =
                 if (sessions.isEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        }
+
+        // Automatically integrate user's previous history records if DB is fresh
+        lifecycleScope.launch {
+            DataImporter.autoSeedFromAssets(this@MainActivity, repository)
+        }
+    }
+
+    /** Imports records from a selected CSV file. */
+    private fun importFromUri(uri: Uri) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                contentResolver.openInputStream(uri)?.use { inputStream ->
+                    val count = DataImporter.importFromInputStream(inputStream, repository)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (count > 0) "Imported $count records successfully!" else "All records in file already exist.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Failed to import: ${e.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
         }
     }
 
