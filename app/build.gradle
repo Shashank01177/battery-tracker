@@ -12,8 +12,30 @@ android {
         applicationId "com.batterytracker"
         minSdk 26
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.1"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('../release.p12')
+            storeType 'PKCS12'
+            storePassword 'batterytracker'
+            keyAlias 'batterytracker'
+            keyPassword 'batterytracker'
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.release
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
     }
 
     buildFeatures {
